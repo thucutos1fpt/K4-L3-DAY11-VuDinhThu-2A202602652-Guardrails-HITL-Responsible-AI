@@ -11,6 +11,7 @@ Status convention (không dùng True/False mơ hồ):
 from __future__ import annotations
 
 import re
+import unicodedata
 from typing import Literal
 
 from google.genai import types
@@ -51,14 +52,22 @@ def detect_injection(user_input: str) -> InputStatus:
     Returns:
         ``"BLOCK"`` if injection detected (chặn), ``"ALLOW"`` otherwise (cho qua).
     """
+    # Normalize full-width Unicode and remove invisible separators before matching.
+    normalized = unicodedata.normalize("NFKC", user_input or "")
+    normalized = re.sub(r"[\u200b\u200c\u200d\ufeff\u2060]", "", normalized)
     INJECTION_PATTERNS = [
-        # TODO: Add at least 5 regex patterns
-        # Example:
-        # r"ignore (all )?(previous|above) instructions",
+        r"\bignore\s+(?:all\s+)?(?:previous|above|prior)\s+instructions?",
+        r"\byou\s+are\s+now\b",
+        r"\b(?:system|developer)\s+prompt\b",
+        r"\breveal\s+(?:your\s+)?(?:instructions?|prompt|secrets?)\b",
+        r"\bpretend\s+(?:you\s+are|to\s+be)\b",
+        r"\bact\s+as\s+(?:an?\s+)?(?:unrestricted|jailbroken|evil)\b",
+        r"\b(?:disregard|override|forget)\s+(?:all\s+)?(?:previous\s+)?(?:instructions?|rules?|prompt)\b",
+        r"\bbỏ\s+qua\s+(?:mọi\s+)?hướng\s+dẫn\b",
+        r"\btiết\s+lộ\s+(?:mật\s+khẩu|api\s*key|system\s*prompt)\b",
     ]
-
     for pattern in INJECTION_PATTERNS:
-        if re.search(pattern, user_input, re.IGNORECASE):
+        if re.search(pattern, normalized, re.IGNORECASE):
             return "BLOCK"
     return "ALLOW"
 
@@ -84,15 +93,17 @@ def topic_filter(user_input: str) -> InputStatus:
         ``"BLOCK"`` = chặn (off-topic hoặc topic cấm).
         ``"ALLOW"`` = cho qua (câu banking hợp lệ).
     """
-    input_lower = user_input.lower()
-
-    # TODO: Implement logic:
-    # 1. If input contains any blocked topic -> return "BLOCK"
-    # 2. If input doesn't contain any allowed topic -> return "BLOCK"
-    # 3. Otherwise -> return "ALLOW"
-
-    pass  # Replace with your implementation
-
+    # Convert Vietnamese accented text to the same no-accent form used by
+    # ALLOWED_TOPICS (e.g. "lãi suất" -> "lai suat").
+    normalized = unicodedata.normalize("NFKD", user_input or "")
+    input_lower = "".join(
+        char for char in normalized if not unicodedata.combining(char)
+    ).casefold().replace("đ", "d")
+    if any(topic.casefold() in input_lower for topic in BLOCKED_TOPICS):
+        return "BLOCK"
+    if not any(topic.casefold() in input_lower for topic in ALLOWED_TOPICS):
+        return "BLOCK"
+    return "ALLOW"
 
 # ============================================================
 # Implement InputGuardrailPlugin
@@ -144,15 +155,18 @@ class InputGuardrailPlugin(base_plugin.BasePlugin):
         self.total_count += 1
         text = self._extract_text(user_message)
 
-        # TODO: Implement logic:
-        # 1. Call detect_injection(text)
-        #    - If "BLOCK": increment blocked_count, return self._block_response("...")
-        # 2. Call topic_filter(text)
-        #    - If "BLOCK": increment blocked_count, return self._block_response("...")
-        # 3. If both return "ALLOW": return None (let message through)
-
-        pass  # Replace with your implementation
-
+        if detect_injection(text) == "BLOCK":
+            self.blocked_count += 1
+            return self._block_response(
+                "I cannot process instructions that attempt to override the assistant. "
+                "I can help with VinBank banking questions."
+            )
+        if topic_filter(text) == "BLOCK":
+            self.blocked_count += 1
+            return self._block_response(
+                "I can only help with VinBank banking-related questions."
+            )
+        return None
 
 # ============================================================
 # Quick tests
